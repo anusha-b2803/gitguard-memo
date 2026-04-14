@@ -6,8 +6,6 @@
 
 GitGuard is a professional-grade DevOps utility designed to eliminate branch-based deployment errors and streamline commit message management. By combining visual safety triggers with a branch-aware memo buffer, GitGuard ensures developers maintain perfect situational awareness.
 
-![GitGuard UI Mockup](gitguard_ui_mockup_1776172719326.png)
-
 ## Core Technical Architecture
 
 ### 1. Visual Context Enforcement
