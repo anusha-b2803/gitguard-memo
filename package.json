@@ -2,7 +2,7 @@
   "name": "gitguard-memo",
   "displayName": "GitGuard & Memo",
   "description": "Visual branch protection and persistent commit memo buffer.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "publisher": "AnushaB",
   "author": "Anusha B",
