@@ -2,7 +2,7 @@
   "name": "gitguard-memo",
   "displayName": "GitGuard & Memo",
   "description": "Professional branch protection and contextual commit memo management for secure development workflows.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "publisher": "AnushaB",
   "author": "Anusha B",
