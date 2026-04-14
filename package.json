@@ -1,0 +1,163 @@
+{
+  "name": "gitguard-memo",
+  "displayName": "GitGuard & Memo",
+  "description": "Visual branch protection and persistent commit memo buffer.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "publisher": "AnushaB",
+  "author": "Anusha B",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnushaB/gitguard-memo.git"
+  },
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:gitguard.memoView",
+    "onCommand:gitguard.addToMemo"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gitguard.addToMemo",
+        "title": "Add to Commit Memo",
+        "category": "GitGuard"
+      },
+      {
+        "command": "gitguard.clearMemo",
+        "title": "Clear Memo",
+        "category": "GitGuard"
+      },
+      {
+        "command": "gitguard.configure",
+        "title": "Configure Branch rules",
+        "category": "GitGuard"
+      },
+      {
+        "command": "gitguard.viewMemo",
+        "title": "View Current Memo",
+        "category": "GitGuard"
+      },
+      {
+        "command": "gitguard.deleteMemoItem",
+        "title": "Delete Memo Item",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "gitguard.previewMemoItem",
+        "title": "Preview Memo Item"
+      },
+      {
+        "command": "gitguard.insertAndCommit",
+        "title": "Insert & Commit",
+        "icon": "$(add)"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "gitguard.insertAndCommit",
+          "when": "view == gitguard.memoView",
+          "group": "inline"
+        },
+        {
+          "command": "gitguard.deleteMemoItem",
+          "when": "view == gitguard.memoView",
+          "group": "inline"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "gitguard.addToMemo",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ]
+    },
+    "views": {
+      "scm": [
+        {
+          "id": "gitguard.memoView",
+          "name": "Commit Memos"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "GitGuard & Memo",
+      "properties": {
+        "gitguard.branchRules": {
+          "type": "array",
+          "default": [
+            {
+              "pattern": "^(main|master|prod)$",
+              "backgroundColor": "#8b0000",
+              "foregroundColor": "#ffffff"
+            },
+            {
+              "pattern": "^(hotfix/.*|release/.*)$",
+              "backgroundColor": "#ffbf00",
+              "foregroundColor": "#000000"
+            }
+          ],
+          "description": "Rules for branch visual styling. Matching pattern uses Regex."
+        },
+        "gitguard.autoPopulateCommit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically populate the Git commit input box with memo items."
+        },
+        "gitguard.colorTargets": {
+          "type": "array",
+          "default": [
+            "statusBar",
+            "titleBar",
+            "activityBar",
+            "tabBar",
+            "breadcrumb"
+          ],
+          "description": "Which UI zones to colorize based on branch rules.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "statusBar",
+              "titleBar",
+              "activityBar",
+              "tabBar",
+              "breadcrumb"
+            ],
+            "enumDescriptions": [
+              "Bottom status bar",
+              "Top title/menu bar",
+              "Left activity/icon bar",
+              "Editor tab bar (navbar)",
+              "Breadcrumb navigation bar"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.70.0",
+    "@types/node": "16.x",
+    "typescript": "^4.7.4",
+    "eslint": "^8.18.0"
+  }
+}
