@@ -1,15 +1,15 @@
 {
   "name": "gitguard-memo",
   "displayName": "GitGuard & Memo",
-  "description": "Visual branch protection and persistent commit memo buffer.",
-  "version": "0.0.2",
+  "description": "Professional branch protection and contextual commit memo management for secure development workflows.",
+  "version": "1.0.0",
   "license": "MIT",
   "publisher": "AnushaB",
   "author": "Anusha B",
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AnushaB/gitguard-memo.git"
+    "url": "https://github.com/anusha-b2803/gitguard-memo"
   },
   "engines": {
     "vscode": "^1.70.0"
@@ -18,6 +18,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:gitguard.memoView",
     "onCommand:gitguard.addToMemo"
   ],
@@ -57,6 +58,36 @@
         "command": "gitguard.insertAndCommit",
         "title": "Insert & Commit",
         "icon": "$(add)"
+      },
+      {
+        "command": "gitguard.repairGit",
+        "title": "Repair Git Workflow (Fix Checkout Errors)",
+        "category": "GitGuard"
+      },
+      {
+        "command": "gitguard.editMemoItem",
+        "title": "Edit Memo",
+        "icon": "$(pencil)"
+      },
+      {
+        "command": "gitguard.moveMemoUp",
+        "title": "Move Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "gitguard.moveMemoDown",
+        "title": "Move Down",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "gitguard.toggleMemoPin",
+        "title": "Pin/Unpin Memo",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "gitguard.refreshMemos",
+        "title": "Refresh Memos",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -64,12 +95,44 @@
         {
           "command": "gitguard.insertAndCommit",
           "when": "view == gitguard.memoView",
-          "group": "inline"
+          "group": "inline@1"
+        },
+        {
+          "command": "gitguard.moveMemoUp",
+          "when": "view == gitguard.memoView",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitguard.moveMemoDown",
+          "when": "view == gitguard.memoView",
+          "group": "inline@3"
+        },
+        {
+          "command": "gitguard.toggleMemoPin",
+          "when": "view == gitguard.memoView",
+          "group": "inline@4"
+        },
+        {
+          "command": "gitguard.editMemoItem",
+          "when": "view == gitguard.memoView",
+          "group": "inline@5"
         },
         {
           "command": "gitguard.deleteMemoItem",
           "when": "view == gitguard.memoView",
-          "group": "inline"
+          "group": "inline@6"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "gitguard.refreshMemos",
+          "when": "view == gitguard.memoView",
+          "group": "navigation"
+        },
+        {
+          "command": "gitguard.clearMemo",
+          "when": "view == gitguard.memoView",
+          "group": "navigation"
         }
       ],
       "editor/context": [
@@ -107,10 +170,36 @@
           ],
           "description": "Rules for branch visual styling. Matching pattern uses Regex."
         },
+        "gitguard.storageMode": {
+          "type": "string",
+          "default": "global",
+          "enum": [
+            "global",
+            "workspace"
+          ],
+          "enumDescriptions": [
+            "Store colors in User Profile (Invisible to Git, supports all branches)",
+            "Store colors in .vscode/settings.json (Causes Git conflicts if tracked)"
+          ],
+          "description": "Where to store UI color customizations. 'global' is recommended to avoid Git errors."
+        },
+        "gitguard.ignoredRepositories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of repository root paths to ignore (No colors will be applied)."
+        },
         "gitguard.autoPopulateCommit": {
           "type": "boolean",
           "default": true,
           "description": "Automatically populate the Git commit input box with memo items."
+        },
+        "gitguard.autoDeleteMemosAfterCommit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically remove a memo item from the list after a successful 'Insert & Commit'."
         },
         "gitguard.colorTargets": {
           "type": "array",

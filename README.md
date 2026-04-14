@@ -1,28 +1,52 @@
 # GitGuard & Memo
 
-**GitGuard & Memo** is a developer experience (DX) extension for VS Code designed to keep your workspace safe from accidental commits to protected branches and to keep your commit history organized using an integrated code snippet tracker.
+[![Version](https://img.shields.io/visual-studio-marketplace/v/AnushaB.gitguard-memo?label=version&color=blue)](https://marketplace.visualstudio.com/items?itemName=AnushaB.gitguard-memo)
+[![License](https://img.shields.io/github/license/anushab2803/git-color?color=green)](LICENSE.md)
+[![Platform](https://img.shields.io/badge/platform-vscode-blue)](https://code.visualstudio.com/)
 
-## Features
+GitGuard is a professional-grade DevOps utility designed to eliminate branch-based deployment errors and streamline commit message management. By combining visual safety triggers with a branch-aware memo buffer, GitGuard ensures developers maintain perfect situational awareness.
 
-### 🛡️ GitGuard: Visual Branch Protection
-Never accidentally push experimental code to production again. GitGuard dynamically colorizes your entire VS Code workspace (Status Bar, Title Bar, Tabs, and Breadcrumbs) based on your active Git branch. 
-* **Critical Alerts**: Automatically paints the IDE Red when working on restricted branches like `main`, `master`, or `prod`.
-* **Custom Palettes**: Choose from a rich curated palette of 24 unique aesthetic Web colors to identify your `feature`, `hotfix`, or `release` branches.
-* **Auto-Discovery**: Automatically links and reads the specific Git repository connected to your active file, working flawlessly across Multi-Root Workspaces.
+![GitGuard UI Mockup](gitguard_ui_mockup_1776172719326.png)
 
-### 📝 Commit Memos: Context-Aware Snippet Buffers
-Say goodbye to forgetting what you changed hours ago. The "Commit Memos" feature acts as a persistent clipboard seamlessly integrated alongside your Git changes.
-* **Capture Anywhere**: Highlight any span of code across the workspace, right-click, and "Add to Commit Memo." 
-* **Rich Metadata**: The extension remembers exactly which file the snippet came from and logs the exact timestamp for reference. No more lost context. 
-* **Smart Insert & Stage**: When you're ready to commit, click the `+` action button over the memo item. GitGuard will:
-  1. Jump directly back to the exact source file you grabbed it from.
-  2. Ask for the precise line number to insert the memo.
-  3. Seamlessly inject your code, save the file, and gracefully **auto-stage** the changes into Git.
+## Core Technical Architecture
 
-## Requirements
-* `vscode.git` (Built-in Git Extension): GitGuard connects to VS Code's internal Git API automatically. You must have Git initialized on your workspace.
+### 1. Visual Context Enforcement
+GitGuard dynamically manages the VS Code interface theme based on the active Git branch, providing an immediate visual safeguard against accidental commits to protected environments.
+- **Protected Branch Hardening**: Critical branches (`main`, `master`, `prod`) are hard-coded to a Crimson Red profile. Users are prevented from modifying these enforcement rules.
+- **Unique Branch Mapping**: Automatically assigns unique, high-contrast colors to feature, development, and hotfix branches to prevent context confusion.
+- **Workspace Isolation**: Multi-window support ensures that branch colors remain isolated to the specific workspace where the branch is checked out.
+
+### 2. Context-Aware Commit Memos
+The Commit Memo system provides a persistent, branch-aware buffer that captures technical snippets and context during the development lifecycle.
+- **Automated Pining**: Memos created on a branch are automatically pinned to that branch. They reappear programmatically upon branch checkout and are hidden in all other contexts.
+- **Unified Interface Synchronization**: The Extension Sidebar, Git Commit Input Box, and Status Bar tooltips are synchronized via a central event bus to update instantly across Git state changes.
+- **Structural Management**: Supports in-place text editing, logical reordering for cohesive commit messages, and global/local pinning toggles.
+
+### 3. Engineering Utilities
+- **Git Workflow Repair**: A dedicated tool to untrack local workspace configurations and prevent checkout conflicts caused by environment settings.
+- **Automated Staging**: Direct insertion of memos into source code with built-in Git staging and commit execution.
+- **Proactive Leak Prevention**: Automatically updates local Git excludes to ensure extension metadata does not pollute the repository index.
+
+## Installation
+
+1. Install via the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AnushaB.gitguard-memo).
+2. Ensure the built-in VS Code Git extension is enabled.
+3. Once a Git repository is detected, GitGuard will automatically activate its monitoring services.
 
 ## Configuration
-Configure GitGuard directly through the User Interface by clicking the **GitGuard** logo locally in the Status Bar or configuring it in your `settings.json`:
-* `gitguard.branchRules`: Regex rules detailing which color mapping belongs to which string regex namespace.
-* `gitguard.colorTargets`: Restrict where the colors display (status bar, tabs, titlebar).
+
+GitGuard offers granular control through JSON-based settings or the Status Bar configuration menu:
+
+| Setting Key | Type | Description |
+| :--- | :--- | :--- |
+| `gitguard.branchRules` | `Array` | Mapping of branch regex patterns to HEX color codes. |
+| `gitguard.storageMode` | `String` | Determines if configuration is stored globally or per-workspace. |
+| `gitguard.autoPopulateCommit` | `Boolean` | Toggles automatic insertion into the Source Control input box. |
+| `gitguard.autoDeleteMemosAfterCommit` | `Boolean` | Enables automatic cleanup of memos after a successful commit. |
+| `gitguard.colorTargets` | `Array` | Defines which UI elements (Status Bar, Tab Bar, etc.) are colorized. |
+
+## Professional Integrity
+This extension is built for high-security environments. It prefers non-intrusive metadata storage and implements strict "Zero-File" intent to ensure no extension data is ever accidentally committed to your project repo.
+
+## License
+Licensed under the [MIT License](LICENSE.md).

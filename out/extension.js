@@ -26,11 +26,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deactivate = exports.activate = void 0;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const child_process_1 = require("child_process");
+let _activeBranchWatcher;
 function activate(context) {
     console.log('[GitGuard] Extension activated.');
     const memoManager = new MemoManager(context);
     const branchWatcher = new BranchWatcher(context);
     const memoTreeProvider = new MemoTreeProvider(memoManager);
+    _activeBranchWatcher = branchWatcher;
     // Register Source Control Memo View
     vscode.window.registerTreeDataProvider('gitguard.memoView', memoTreeProvider);
     // Create and show the Status Bar "Button"
@@ -41,7 +45,7 @@ function activate(context) {
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
     // Register Commands
-    context.subscriptions.push(vscode.commands.registerCommand('gitguard.addToMemo', () => {
+    context.subscriptions.push(vscode.commands.registerCommand('gitguard.addToMemo', async () => {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
             if (editor.document.isUntitled) {
@@ -51,14 +55,30 @@ function activate(context) {
             const selection = editor.selection;
             const text = editor.document.getText(selection);
             if (text) {
+                // Robust branch detection with retry logic (total 1.5s wait)
+                let currentBranch;
+                for (let i = 0; i < 5; i++) {
+                    const activeRepo = branchWatcher.getActiveRepository();
+                    currentBranch = activeRepo?.state.HEAD?.name;
+                    if (currentBranch)
+                        break;
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
                 const entry = {
                     id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
                     text,
                     filePath: editor.document.uri.fsPath,
                     fileName: path.basename(editor.document.fileName),
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    branchName: currentBranch // Auto-pin to detected branch
                 };
                 memoManager.addToMemo(entry);
+                if (!currentBranch) {
+                    vscode.window.setStatusBarMessage(`🛡️ GitGuard: No branch detected. Saved as Global memo.`, 5000);
+                }
+                // Automatically switch to SCM view and focus the memos
+                vscode.commands.executeCommand('workbench.view.scm');
+                vscode.commands.executeCommand('gitguard.memoView.focus');
             }
         }
     }), vscode.commands.registerCommand('gitguard.clearMemo', async () => {
@@ -130,22 +150,63 @@ function activate(context) {
             await activeRepo.add([document.uri.fsPath]);
             await activeRepo.commit(item.entry.text);
             vscode.window.showInformationMessage('Memo auto-committed successfully!');
-            // Auto-delete on success to keep workspace clean
-            memoManager.deleteItemById(item.entry.id);
+            // Only auto-delete if the user has enabled the setting
+            const autoDelete = vscode.workspace.getConfiguration('gitguard').get('autoDeleteMemosAfterCommit', false);
+            if (autoDelete) {
+                // Auto-delete on success to keep workspace clean
+                memoManager.deleteItemById(item.entry.id);
+            }
         }
         catch (err) {
             vscode.window.showErrorMessage(`Auto-commit failed: ${err.message}`);
         }
+    }), vscode.commands.registerCommand('gitguard.repairGit', async () => {
+        const activeRepo = branchWatcher.getActiveRepository();
+        if (!activeRepo) {
+            vscode.window.showErrorMessage('No Git repository found to repair.');
+            return;
+        }
+        await branchWatcher.repairGitWorkflow(activeRepo.rootUri.fsPath);
+    }), branchWatcher.onDidBranchChange(() => {
+        memoTreeProvider.refresh();
+    }), vscode.commands.registerCommand('gitguard.editMemoItem', async (item) => {
+        const newText = await vscode.window.showInputBox({
+            prompt: 'Edit your memo message',
+            value: item.entry.text,
+            ignoreFocusOut: true
+        });
+        if (newText !== undefined && newText.trim().length > 0) {
+            memoManager.editItem(item.entry.id, newText);
+            memoTreeProvider.refresh();
+        }
+    }), vscode.commands.registerCommand('gitguard.moveMemoUp', (item) => {
+        memoManager.moveItem(item.entry.id, 'up');
+        memoTreeProvider.refresh();
+    }), vscode.commands.registerCommand('gitguard.moveMemoDown', (item) => {
+        memoManager.moveItem(item.entry.id, 'down');
+        memoTreeProvider.refresh();
+    }), vscode.commands.registerCommand('gitguard.toggleMemoPin', (item) => {
+        const activeRepo = branchWatcher.getActiveRepository();
+        const currentBranch = activeRepo?.state.HEAD?.name;
+        memoManager.togglePin(item.entry.id, currentBranch);
+        // Unified refresh handles the rest
+    }), vscode.commands.registerCommand('gitguard.refreshMemos', () => {
+        refreshAllUI();
+        vscode.window.showInformationMessage('Commit Memos refreshed.');
     }));
-    // Wire up branchWatcher as a disposable so it's cleaned up on deactivation
-    context.subscriptions.push({ dispose: () => branchWatcher.dispose() });
-    // Update git commit input and status bar tooltip whenever the memo buffer changes
-    memoManager.onDidUpdateMemo(() => {
-        const text = memoManager.getFormattedMemo();
+    // Wire up branchWatcher as a disposable
+    context.subscriptions.push(branchWatcher);
+    const refreshAllUI = () => {
+        const activeRepo = branchWatcher.getActiveRepository();
+        const currentBranch = activeRepo?.state.HEAD?.name;
+        const text = memoManager.getFormattedMemo(currentBranch);
         branchWatcher.updateGitInput(text);
         branchWatcher.updateStatusBarTooltip(text);
         memoTreeProvider.refresh();
-    });
+    };
+    // Update everything whenever the branch changes or memos change
+    branchWatcher.onDidBranchChange(refreshAllUI);
+    memoManager.onDidUpdateMemo(refreshAllUI);
     branchWatcher.start();
 }
 exports.activate = activate;
@@ -187,6 +248,8 @@ class BranchWatcher {
         this.disposables = [];
         this.isPrompting = false;
         this.declinedBranches = new Set();
+        this._onDidBranchChange = new vscode.EventEmitter();
+        this.onDidBranchChange = this._onDidBranchChange.event;
         const gitExtension = vscode.extensions.getExtension('vscode.git');
         if (gitExtension) {
             this.gitAPI = gitExtension.exports.getAPI(1);
@@ -221,18 +284,27 @@ class BranchWatcher {
     async configure(context) {
         const options = ['Change Current Branch Color', 'Remove All Rules', 'Reset to Defaults'];
         const selection = await vscode.window.showQuickPick(options, { placeHolder: 'GitGuard: Configuration' });
+        const mode = vscode.workspace.getConfiguration('gitguard').get('storageMode') || 'global';
+        const target = (mode === 'workspace' && vscode.workspace.workspaceFolders) ?
+            vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
         if (selection === 'Change Current Branch Color') {
             const activeRepo = this.getActiveRepository();
             if (activeRepo?.state.HEAD?.name) {
-                await this.promptForColor(activeRepo.state.HEAD.name);
+                const branchName = activeRepo.state.HEAD.name;
+                if (this.isCritical(branchName)) {
+                    vscode.window.showInformationMessage(`🛡️ Branch "${branchName}" is registered as a Critical Branch and is locked to Crimson Red.`);
+                    return;
+                }
+                this.declinedBranches.delete(branchName);
+                await this.promptForColor(branchName);
             }
         }
         else if (selection === 'Remove All Rules') {
-            await vscode.workspace.getConfiguration('gitguard').update('branchRules', [], vscode.ConfigurationTarget.Global);
+            await vscode.workspace.getConfiguration('gitguard').update('branchRules', [], target);
             this.updateColors();
         }
         else if (selection === 'Reset to Defaults') {
-            await vscode.workspace.getConfiguration('gitguard').update('branchRules', undefined, vscode.ConfigurationTarget.Global);
+            await vscode.workspace.getConfiguration('gitguard').update('branchRules', undefined, target);
             this.updateColors();
         }
     }
@@ -240,7 +312,7 @@ class BranchWatcher {
         return /^(main|master|prod)$/i.test(branch);
     }
     async promptForColor(branchName) {
-        if (this.isPrompting)
+        if (this.isCritical(branchName))
             return;
         this.isPrompting = true;
         try {
@@ -248,18 +320,10 @@ class BranchWatcher {
             const rules = config.get('branchRules') || [];
             // Check all used colors except the one for this specific pattern
             const usedColors = new Set(rules.filter(r => r.pattern !== `^${branchName}$`).map(r => r.backgroundColor.toLowerCase()));
-            let options = [];
-            if (this.isCritical(branchName)) {
-                options.push(CRITICAL_RED);
-                const redOptions = PALETTE.filter(p => this.isRed(p.hex) && !usedColors.has(p.hex.toLowerCase()));
-                options.push(...redOptions);
-            }
-            else {
-                // Filter out used colors and explicitly exclude ANY red shades for non-critical branches
-                options = PALETTE.filter(p => !usedColors.has(p.hex.toLowerCase()) && !this.isRed(p.hex));
-            }
+            // Filter out used colors and explicitly exclude ANY red shades for non-critical branches
+            let options = PALETTE.filter(p => !usedColors.has(p.hex.toLowerCase()) && !this.isRed(p.hex));
             if (options.length === 0) {
-                vscode.window.showInformationMessage('All unique colors are already taken! Clearing oldest rule might help.');
+                vscode.window.showInformationMessage('All unique colors for this branch type are already taken! Clearing oldest rule might help.');
                 return;
             }
             const quickPickOptions = options.map(o => ({ label: o.label, description: o.hex }));
@@ -334,8 +398,11 @@ class BranchWatcher {
                 else {
                     rules.push(newRule);
                 }
-                await config.update('branchRules', rules, vscode.ConfigurationTarget.Global);
-                this.declinedBranches.delete(branchName); // Succesfully colored
+                const mode = vscode.workspace.getConfiguration('gitguard').get('storageMode') || 'global';
+                const target = (mode === 'workspace' && vscode.workspace.workspaceFolders) ?
+                    vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+                await config.update('branchRules', rules, target);
+                this.declinedBranches.delete(branchName); // Successfully colored
                 this.updateColors();
             }
             else {
@@ -380,9 +447,23 @@ class BranchWatcher {
     start() {
         if (!this.gitAPI)
             return;
-        this.gitAPI.repositories.forEach(repo => this.watchRepository(repo));
-        this.gitAPI.onDidOpenRepository(repo => this.watchRepository(repo), null, this.disposables);
+        this.gitAPI.repositories.forEach(repo => {
+            this.watchRepository(repo);
+            this.ensureInvisibility(repo.rootUri.fsPath); // PROACTIVE
+        });
+        this.gitAPI.onDidOpenRepository(repo => {
+            this.watchRepository(repo);
+            this.ensureInvisibility(repo.rootUri.fsPath); // PROACTIVE
+        }, null, this.disposables);
+        // Initial update
         this.updateColors();
+        // Robustness: Retry update after a short delay to catch late-loading Git repositories
+        setTimeout(() => this.updateColors(), 2000);
+    }
+    async ensureInvisibility(root) {
+        await this.ensureLocalExclude(root);
+        await this.ensureGitIgnore(root);
+        await this.skipWorktree(root);
     }
     watchRepository(repo) {
         if (repo.state && typeof repo.state.onDidChange === 'function') {
@@ -401,9 +482,40 @@ class BranchWatcher {
             this.statusBarItem.text = "$(shield) GitGuard: No Repo";
             return;
         }
+        const repoPath = activeRepo.rootUri.fsPath;
+        if (this.isRepositoryIgnored(repoPath)) {
+            this.resetColors();
+            this.statusBarItem.text = `$(shield) Ignored Repo`;
+            return;
+        }
         const branchName = activeRepo.state.HEAD.name;
         const config = vscode.workspace.getConfiguration('gitguard');
         const rules = config.get('branchRules') || [];
+        // 1. Priority Enforcement: Critical branches are ALWAYS Crimson Red
+        if (this.isCritical(branchName)) {
+            const hex = CRITICAL_RED.hex;
+            const fg = this.isLight(hex) ? '#000000' : '#ffffff';
+            await this.applyColors(hex, fg);
+            this.statusBarItem.text = `$(shield) ${branchName}`;
+            this.statusBarItem.color = hex;
+            // Auto-heal configuration if it's missing or incorrect
+            const existingIdx = rules.findIndex(r => r.pattern === `^${branchName}$`);
+            const ruleMatches = existingIdx !== -1 && rules[existingIdx].backgroundColor.toLowerCase() === hex.toLowerCase();
+            if (!ruleMatches) {
+                const newRule = { pattern: `^${branchName}$`, backgroundColor: hex, foregroundColor: fg };
+                const updatedRules = [...rules];
+                if (existingIdx !== -1)
+                    updatedRules[existingIdx] = newRule;
+                else
+                    updatedRules.push(newRule);
+                const mode = config.get('storageMode') || 'global';
+                const target = (mode === 'workspace' && vscode.workspace.workspaceFolders) ?
+                    vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+                await config.update('branchRules', updatedRules, target);
+            }
+            this._onDidBranchChange.fire(branchName);
+            return; // Exit early for critical branches
+        }
         let matched = false;
         for (const rule of rules) {
             const regex = new RegExp(rule.pattern);
@@ -432,6 +544,19 @@ class BranchWatcher {
                 this.promptForColor(branchName);
             }
         }
+        this._onDidBranchChange.fire(branchName);
+    }
+    isRepositoryIgnored(repoPath) {
+        const ignored = vscode.workspace.getConfiguration('gitguard').get('ignoredRepositories') || [];
+        const normalizedPath = repoPath.replace(/\\/g, '/').toLowerCase();
+        // Always ignore the extension source if identifiable
+        if (normalizedPath.endsWith('gitguard-memo') || normalizedPath.endsWith('git-color')) {
+            return true;
+        }
+        return ignored.some(i => {
+            const normI = i.replace(/\\/g, '/').toLowerCase();
+            return normalizedPath === normI || normalizedPath.startsWith(normI + '/');
+        });
     }
     getColorMap(bg, fg) {
         return {
@@ -448,31 +573,155 @@ class BranchWatcher {
         };
     }
     async applyColors(bg, fg) {
-        const customizations = { ...(vscode.workspace.getConfiguration('workbench').get('colorCustomizations') || {}) };
+        const config = vscode.workspace.getConfiguration('workbench');
+        // WINDOW ISOLATION: Always use Workspace target if a folder is open.
+        // This prevents colors from changing in other windows.
+        const target = vscode.workspace.workspaceFolders ?
+            vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+        // Read only the current target's value to avoid duplicating global settings into workspace
+        const inspect = config.inspect('colorCustomizations');
+        const currentCustoms = { ...(target === vscode.ConfigurationTarget.Workspace ? inspect?.workspaceValue : inspect?.globalValue) || {} };
         const colorMap = this.getColorMap(bg, fg);
         const targets = vscode.workspace.getConfiguration('gitguard').get('colorTargets') ||
             ['statusBar', 'titleBar', 'activityBar', 'tabBar', 'breadcrumb'];
-        for (const target of targets) {
-            if (colorMap[target]) {
-                Object.assign(customizations, colorMap[target]);
+        // 1. Clear ALL possible GitGuard keys first to handle 'colorTargets' changes or target swaps
+        const allKeys = Object.values(this.getColorMap('#000', '#fff')).flatMap(zone => Object.keys(zone));
+        for (const key of allKeys) {
+            delete currentCustoms[key];
+        }
+        // 2. Apply current targets
+        for (const t of targets) {
+            if (colorMap[t]) {
+                Object.assign(currentCustoms, colorMap[t]);
             }
         }
-        const target = vscode.workspace.workspaceFolders ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-        await vscode.workspace.getConfiguration('workbench').update('colorCustomizations', customizations, target);
+        // 3. Proactive invisibility to avoid Git IRRRRRITATION (Zero-File intent)
+        const activeRepo = this.getActiveRepository();
+        if (activeRepo) {
+            await this.ensureInvisibility(activeRepo.rootUri.fsPath);
+        }
+        // 4. Update the target
+        await config.update('colorCustomizations', currentCustoms, target);
+        // 5. Clean up orphans from previous buggy versions that might have set Global when they shouldn't
+        if (target === vscode.ConfigurationTarget.Workspace) {
+            await this.clearGlobalOrphans(allKeys);
+        }
+    }
+    async clearGlobalOrphans(allKeys) {
+        const config = vscode.workspace.getConfiguration('workbench');
+        const inspect = config.inspect('colorCustomizations');
+        if (inspect?.globalValue) {
+            const gCustoms = { ...inspect.globalValue };
+            let changed = false;
+            for (const key of allKeys) {
+                if (key in gCustoms) {
+                    delete gCustoms[key];
+                    changed = true;
+                }
+            }
+            if (changed) {
+                await config.update('colorCustomizations', gCustoms, vscode.ConfigurationTarget.Global);
+            }
+        }
+    }
+    async repairGitWorkflow(repoRoot) {
+        const confirm = await vscode.window.showInformationMessage('Repairing Git Workflow will untrack .vscode folder and ignore local settings. This fixes "Checkout Overwritten" errors. Proceed?', { modal: true }, 'Yes', 'No');
+        if (confirm !== 'Yes')
+            return;
+        // 1. Untrack from index
+        (0, child_process_1.exec)('git rm -r --cached --sparse .vscode', { cwd: repoRoot }, (err) => {
+            if (err) {
+                // Ignore errors if already untracked
+                console.log('[GitGuard] rm --cached failed (might already be untracked).');
+            }
+            // 2. Skip worktree
+            (0, child_process_1.exec)('git update-index --skip-worktree .vscode/settings.json', { cwd: repoRoot }, (innerErr) => {
+                // 3. Update .gitignore
+                this.ensureGitIgnore(repoRoot);
+                vscode.window.showInformationMessage('GitGuard: Repair command sent. Please COMMIT your changes now to finish unblocking your branches!');
+            });
+        });
+    }
+    async ensureGitIgnore(repoRoot) {
+        try {
+            const ignorePath = path.join(repoRoot, '.gitignore');
+            const entry = '.vscode/';
+            let content = '';
+            if (fs.existsSync(ignorePath)) {
+                content = fs.readFileSync(ignorePath, 'utf8');
+            }
+            if (!content.includes(entry)) {
+                const divider = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+                fs.appendFileSync(ignorePath, `${divider}# Ignored by GitGuard\n${entry}\n`);
+                vscode.window.showInformationMessage(`GitGuard: Added ${entry} to .gitignore to prevent accidental commits.`);
+            }
+        }
+        catch (err) {
+            console.error('[GitGuard] Failed to update .gitignore:', err);
+        }
+    }
+    async skipWorktree(repoRoot) {
+        // Execute 'git update-index --skip-worktree .vscode/settings.json'
+        // This stops git from tracking changes even if the file is indexed.
+        const settingsPath = '.vscode/settings.json';
+        (0, child_process_1.exec)(`git update-index --skip-worktree ${settingsPath}`, { cwd: repoRoot }, (err) => {
+            if (!err) {
+                console.log(`[GitGuard] Skipped worktree for ${settingsPath}`);
+            }
+            else {
+                console.error(`[GitGuard] skip-worktree failed: ${err.message}`);
+            }
+        });
+    }
+    async ensureLocalExclude(repoRoot) {
+        try {
+            const excludePath = path.join(repoRoot, '.git', 'info', 'exclude');
+            if (!fs.existsSync(path.dirname(excludePath)))
+                return; // Not a standard Git repo or no info dir
+            const entry = '.vscode/settings.json';
+            let content = '';
+            if (fs.existsSync(excludePath)) {
+                content = fs.readFileSync(excludePath, 'utf8');
+            }
+            if (!content.includes(entry)) {
+                const divider = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+                fs.appendFileSync(excludePath, `${divider}${entry}\n`);
+                console.log(`[GitGuard] Added ${entry} to local git exclude.`);
+            }
+        }
+        catch (err) {
+            console.error('[GitGuard] Failed to update git exclude:', err);
+        }
     }
     async resetColors() {
-        const customizations = { ...(vscode.workspace.getConfiguration('workbench').get('colorCustomizations') || {}) };
+        const config = vscode.workspace.getConfiguration('workbench');
         const allKeys = Object.values(this.getColorMap('#000', '#fff')).flatMap(zone => Object.keys(zone));
-        let changed = false;
-        for (const key of allKeys) {
-            if (key in customizations) {
-                delete customizations[key];
-                changed = true;
+        const inspect = config.inspect('colorCustomizations');
+        // Clean Workspace
+        if (inspect?.workspaceValue) {
+            const wsCustoms = { ...inspect.workspaceValue };
+            let changed = false;
+            for (const key of allKeys) {
+                if (key in wsCustoms) {
+                    delete wsCustoms[key];
+                    changed = true;
+                }
             }
+            if (changed)
+                await config.update('colorCustomizations', wsCustoms, vscode.ConfigurationTarget.Workspace);
         }
-        if (changed) {
-            const target = vscode.workspace.workspaceFolders ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-            await vscode.workspace.getConfiguration('workbench').update('colorCustomizations', customizations, target);
+        // Clean Global
+        if (inspect?.globalValue) {
+            const gCustoms = { ...inspect.globalValue };
+            let changed = false;
+            for (const key of allKeys) {
+                if (key in gCustoms) {
+                    delete gCustoms[key];
+                    changed = true;
+                }
+            }
+            if (changed)
+                await config.update('colorCustomizations', gCustoms, vscode.ConfigurationTarget.Global);
         }
     }
     updateStatusBarTooltip(text) {
@@ -485,22 +734,38 @@ class BranchWatcher {
         }
     }
     updateGitInput(text) {
-        if (!this.gitAPI || !text)
+        if (!this.gitAPI)
             return;
         const autoPopulate = vscode.workspace.getConfiguration('gitguard').get('autoPopulateCommit');
         if (!autoPopulate)
             return;
+        const markerHead = '--- GitGuard Commit Memos ---';
+        const marker = `\n\n${markerHead}\n`;
         this.gitAPI.repositories.forEach(repo => {
             if (repo.inputBox) {
                 const currentVal = repo.inputBox.value;
-                // Only append if the text isn't already there to avoid duplicates
-                if (!currentVal.includes(text)) {
-                    repo.inputBox.value = currentVal ? `${currentVal}\n\n${text}` : text;
+                const markerIndex = currentVal.indexOf(markerHead);
+                let baseValue = currentVal;
+                if (markerIndex !== -1) {
+                    // Find the start of the marker block (including potential leading newlines)
+                    const beforeMarker = currentVal.substring(0, markerIndex);
+                    baseValue = beforeMarker.trim();
+                }
+                if (text) {
+                    const newVal = baseValue ? `${baseValue}${marker}${text}` : text;
+                    if (currentVal !== newVal) {
+                        repo.inputBox.value = newVal;
+                    }
+                }
+                else if (markerIndex !== -1) {
+                    // If no text but marker exists, remove marker and everything after
+                    repo.inputBox.value = baseValue;
                 }
             }
         });
     }
-    dispose() {
+    async dispose() {
+        await this.resetColors();
         this.disposables.forEach(d => d.dispose());
     }
 }
@@ -523,7 +788,7 @@ class MemoManager {
         this._onDidUpdateMemo.fire();
     }
     deleteItemById(id) {
-        const memoBuffer = this.getItems();
+        const memoBuffer = this.getAllItems();
         const index = memoBuffer.findIndex(i => i.id === id);
         if (index !== -1) {
             memoBuffer.splice(index, 1);
@@ -531,7 +796,57 @@ class MemoManager {
             this._onDidUpdateMemo.fire();
         }
     }
-    getItems() {
+    editItem(id, newText) {
+        const memoBuffer = this.getAllItems();
+        const item = memoBuffer.find(i => i.id === id);
+        if (item) {
+            item.text = newText;
+            this.context.workspaceState.update('memoBuffer', memoBuffer);
+            this._onDidUpdateMemo.fire();
+        }
+    }
+    moveItem(id, direction) {
+        const memoBuffer = this.getAllItems();
+        const index = memoBuffer.findIndex(i => i.id === id);
+        if (index === -1)
+            return;
+        if (direction === 'up' && index > 0) {
+            [memoBuffer[index], memoBuffer[index - 1]] = [memoBuffer[index - 1], memoBuffer[index]];
+        }
+        else if (direction === 'down' && index < memoBuffer.length - 1) {
+            [memoBuffer[index], memoBuffer[index + 1]] = [memoBuffer[index + 1], memoBuffer[index]];
+        }
+        else {
+            return;
+        }
+        this.context.workspaceState.update('memoBuffer', memoBuffer);
+        this._onDidUpdateMemo.fire();
+    }
+    togglePin(id, currentBranchName) {
+        const memoBuffer = this.getAllItems();
+        const item = memoBuffer.find(i => i.id === id);
+        if (item) {
+            if (item.branchName) {
+                delete item.branchName; // Make global
+            }
+            else if (currentBranchName) {
+                item.branchName = currentBranchName; // Pin to current
+            }
+            this.context.workspaceState.update('memoBuffer', memoBuffer);
+            this._onDidUpdateMemo.fire();
+        }
+    }
+    /**
+     * Get items filtered by the current branch.
+     * Shows: (Global items) OR (Items pinned to this branch)
+     */
+    getItems(currentBranch) {
+        const all = this.getAllItems();
+        if (!currentBranch)
+            return all;
+        return all.filter(item => !item.branchName || item.branchName === currentBranch);
+    }
+    getAllItems() {
         const raw = this.context.workspaceState.get('memoBuffer', []);
         return raw.map(item => {
             if (typeof item === 'string') {
@@ -543,8 +858,8 @@ class MemoManager {
             return item;
         });
     }
-    getFormattedMemo() {
-        const memoBuffer = this.getItems();
+    getFormattedMemo(currentBranch) {
+        const memoBuffer = this.getItems(currentBranch);
         if (memoBuffer.length === 0)
             return '';
         return memoBuffer.map(item => `- ${item.text}`).join('\n');
@@ -568,21 +883,44 @@ class MemoTreeProvider {
     getChildren(element) {
         if (element)
             return [];
-        return this.memoManager.getItems().map((entry, index) => new MemoItem(entry, index));
+        // Direct lookup from the watcher to ensure fresh branch state
+        const activeRepo = _activeBranchWatcher?.getActiveRepository();
+        const currentBranch = activeRepo?.state.HEAD?.name;
+        const items = this.memoManager.getItems(currentBranch);
+        // SORT: Pinned items at the top
+        const sortedItems = items.sort((a, b) => {
+            if (a.branchName && !b.branchName)
+                return -1;
+            if (!a.branchName && b.branchName)
+                return 1;
+            return 0;
+        });
+        return sortedItems.map((entry, index) => new MemoItem(entry, index, currentBranch));
     }
 }
 class MemoItem extends vscode.TreeItem {
-    constructor(entry, index) {
+    constructor(entry, index, currentBranchName) {
         const fullText = entry.text;
         const snippet = fullText.length > 50 ? fullText.substring(0, 50) + '...' : fullText;
-        const label = `${snippet}    #${index + 1} (${entry.fileName})`;
+        // Label shows the snippet and index. Prefix pinned items with 📌
+        const label = entry.branchName ? `📌 ${snippet}` : snippet;
         super(label, vscode.TreeItemCollapsibleState.None);
         this.entry = entry;
         this.index = index;
+        this.currentBranchName = currentBranchName;
+        // Description shows the origin file and pin status
+        const pinStatus = entry.branchName ? `(Pinned: ${entry.branchName})` : '(Global)';
+        this.description = `#${index + 1} ${pinStatus}`;
         const dateStr = new Date(entry.timestamp).toLocaleString();
-        this.tooltip = `File: ${entry.fileName}\nTime: ${dateStr}\n\n${fullText}`;
-        this.contextValue = 'memoItem';
-        this.iconPath = new vscode.ThemeIcon('bookmark');
+        this.tooltip = `File: ${entry.fileName}\nBranch: ${entry.branchName || 'Global'}\nTime: ${dateStr}\n\n${fullText}`;
+        // Context value allows menu icons to be shown/hidden
+        this.contextValue = entry.branchName ? 'memoItemPinned' : 'memoItemGlobal';
+        if (entry.branchName) {
+            this.iconPath = new vscode.ThemeIcon('pin', new vscode.ThemeColor('charts.blue'));
+        }
+        else {
+            this.iconPath = new vscode.ThemeIcon('bookmark');
+        }
         this.command = {
             command: 'gitguard.previewMemoItem',
             title: 'Preview Memo Item',
@@ -590,6 +928,11 @@ class MemoItem extends vscode.TreeItem {
         };
     }
 }
-function deactivate() { }
+async function deactivate() {
+    console.log('[GitGuard] Extension deactivated. Cleaning up...');
+    if (_activeBranchWatcher) {
+        await _activeBranchWatcher.dispose();
+    }
+}
 exports.deactivate = deactivate;
 //# sourceMappingURL=extension.js.map
